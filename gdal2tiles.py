@@ -1,6 +1,7 @@
-#!/usr/bin/env python
+#! /usr/bin/python
+# -*- coding: utf-8 -*-
 #******************************************************************************
-#  $Id$
+#  $Id: gdal2tiles.py 27349 2014-05-16 18:58:51Z rouault $
 # 
 # Project:  Google Summer of Code 2007, 2008 (http://code.google.com/soc/)
 # Support:  BRGM (http://www.brgm.fr)
@@ -15,6 +16,8 @@
 #
 ###############################################################################
 # Copyright (c) 2008, Klokan Petr Pridal
+# Copyright (c) 2010-2013, Even Rouault <even dot rouault at mines-paris dot org>
+# Copyright (c) 2015, Cayle Sharrock <cayle at nimbustech dot biz>
 # 
 #  Permission is hereby granted, free of charge, to any person obtaining a
 #  copy of this software and associated documentation files (the "Software"),
@@ -56,7 +59,7 @@ except:
     # 'antialias' resampling is not available
     pass
 
-__version__ = "$Id$"
+__version__ = "1.11.2_1 git@github:CjS77/gdal2tiles"
 
 resampling_list = ('average','near','bilinear','cubic','cubicspline','lanczos','antialias')
 profile_list = ('mercator','geodetic','raster') #,'zoomify')
@@ -75,7 +78,7 @@ Global Map Tiles as defined in Tile Map Service (TMS) Profiles
 Functions necessary for generation of global tiles used on the web.
 It contains classes implementing coordinate conversions for:
 
-  - GlobalMercator (based on EPSG:900913 = EPSG:3785)
+  - GlobalMercator (based on EPSG:900913 = EPSG:3785 = EPSG:3857)
        for Google Maps, Yahoo Maps, Bing Maps compatible tiles
   - GlobalGeodetic (based on EPSG:4326)
        for OpenLayers Base Map and Google Earth compatible tiles
@@ -91,7 +94,7 @@ Created by Klokan Petr Pridal on 2008-07-03.
 Google Summer of Code 2008, project GDAL2Tiles for OSGEO.
 
 In case you use this class in your product, translate it to another language
-or find it usefull for your project please let me know.
+or find it useful for your project please let me know.
 My email: klokan at klokan dot cz.
 I would like to know where it was used.
 
@@ -108,7 +111,7 @@ class GlobalMercator(object):
     ---------------------------
 
   Functions necessary for generation of tiles in Spherical Mercator projection,
-  EPSG:900913 (EPSG:gOOglE, Google Maps Global Mercator), EPSG:3785, OSGEO:41001.
+  EPSG:900913 (EPSG:gOOglE, Google Maps Global Mercator), EPSG:3785, OSGEO:41001, EPSG:3857.
 
   Such tiles are compatible with Google Maps, Bing Maps, Yahoo Maps,
   UK Ordnance Survey OpenSpace API, ...
@@ -352,15 +355,23 @@ class GlobalGeodetic(object):
        WMS, KML    Web Clients, Google Earth  TileMapService
     """
 
-    def __init__(self, tileSize = 256):
+    def __init__(self, tmscompatible, tileSize = 256):
         self.tileSize = tileSize
+        if tmscompatible is not None:
+            # Defaults the resolution factor to 0.703125 (2 tiles @ level 0)
+            # Adhers to OSGeo TMS spec http://wiki.osgeo.org/wiki/Tile_Map_Service_Specification#global-geodetic
+            self.resFact = 180.0 / self.tileSize
+        else:
+            # Defaults the resolution factor to 1.40625 (1 tile @ level 0)
+            # Adheres OpenLayers, MapProxy, etc default resolution for WMTS
+            self.resFact = 360.0 / self.tileSize
 
-    def LatLonToPixels(self, lat, lon, zoom):
-        "Converts lat/lon to pixel coordinates in given zoom of the EPSG:4326 pyramid"
+    def LonLatToPixels(self, lon, lat, zoom):
+        "Converts lon/lat to pixel coordinates in given zoom of the EPSG:4326 pyramid"
 
-        res = 180.0 / self.tileSize / 2**zoom
-        px = (180 + lat) / res
-        py = (90 + lon) / res
+        res = self.resFact / 2**zoom
+        px = (180 + lon) / res
+        py = (90 + lat) / res
         return px, py
 
     def PixelsToTile(self, px, py):
@@ -370,16 +381,16 @@ class GlobalGeodetic(object):
         ty = int( math.ceil( py / float(self.tileSize) ) - 1 )
         return tx, ty
 
-    def LatLonToTile(self, lat, lon, zoom):
-        "Returns the tile for zoom which covers given lat/lon coordinates"
+    def LonLatToTile(self, lon, lat, zoom):
+        "Returns the tile for zoom which covers given lon/lat coordinates"
 
-        px, py = self.LatLonToPixels( lat, lon, zoom)
+        px, py = self.LonLatToPixels( lon, lat, zoom)
         return self.PixelsToTile(px,py)
 
     def Resolution(self, zoom ):
         "Resolution (arc/pixel) for given zoom level (measured at Equator)"
 
-        return 180.0 / self.tileSize / 2**zoom
+        return self.resFact / 2**zoom
         #return 180 / float( 1 << (8+zoom) )
 
     def ZoomForPixelSize(self, pixelSize ):
@@ -394,7 +405,7 @@ class GlobalGeodetic(object):
 
     def TileBounds(self, tx, ty, zoom):
         "Returns bounds of the given tile"
-        res = 180.0 / self.tileSize / 2**zoom
+        res = self.resFact / 2**zoom
         return (
             tx*self.tileSize*res - 180,
             ty*self.tileSize*res - 90,
@@ -431,7 +442,7 @@ class Zoomify(object):
         self.tierImageSize = []
         self.tierImageSize.append( imagesize );
 
-        while (imagesize[0] > tilesize or imageSize[1] > tilesize ):
+        while (imagesize[0] > tilesize or imagesize[1] > tilesize ):
             imagesize = (math.floor( imagesize[0] / 2 ), math.floor( imagesize[1] / 2) )
             tiles = ( math.ceil( imagesize[0] / tilesize ), math.ceil( imagesize[1] / tilesize ) )
             self.tierSizeInTiles.append( tiles )
@@ -655,6 +666,9 @@ gdal_vrtmerge.py -o merged.vrt %s""" % " ".join(self.args))
                           help="Resume mode. Generate only missing files.")
         p.add_option('-a', '--srcnodata', dest="srcnodata", metavar="NODATA",
                           help="NODATA transparency value to assign to the input data")
+        p.add_option('-d', '--tmscompatible', dest="tmscompatible", action="store_true",
+                          help="When using the geodetic profile, specifies the base resolution as 0.703125 or 2 tiles at zoom level 0.")
+        p.add_option('-x', '--xyz', dest='xyzFormat', help="Use XYZ tile numbering instead of TMS", action='store_true')
         p.add_option("-v", "--verbose",
                           action="store_true", dest="verbose",
                           help="Print status messages to stdout")
@@ -691,7 +705,7 @@ gdal_vrtmerge.py -o merged.vrt %s""" % " ".join(self.args))
 
         p.set_defaults(verbose=False, profile="mercator", kml=False, url='',
         webviewer='all', copyright='', resampling='average', resume=False,
-        googlekey='INSERT_YOUR_KEY_HERE', bingkey='INSERT_YOUR_KEY_HERE')
+        googlekey='INSERT_YOUR_KEY_HERE', bingkey='INSERT_YOUR_KEY_HERE', xyzFormat=False)
 
         self.parser = p
 
@@ -783,7 +797,8 @@ gdal2tiles temp.vrt""" % self.input )
         self.out_srs = osr.SpatialReference()
 
         if self.options.profile == 'mercator':
-            self.out_srs.ImportFromEPSG(900913)
+            # epsg:3857 == epsg:900913
+            self.out_srs.ImportFromEPSG(3857)
         elif self.options.profile == 'geodetic':
             self.out_srs.ImportFromEPSG(4326)
         else:
@@ -980,7 +995,7 @@ gdal2tiles temp.vrt""" % self.input )
 
         if self.options.profile == 'geodetic':
 
-            self.geodetic = GlobalGeodetic() # from globalmaptiles.py
+            self.geodetic = GlobalGeodetic(self.options.tmscompatible) # from globalmaptiles.py
 
             # Function which generates SWNE in LatLong for given tile
             self.tileswne = self.geodetic.TileLatLonBounds
@@ -988,8 +1003,8 @@ gdal2tiles temp.vrt""" % self.input )
             # Generate table with min max tile coordinates for all zoomlevels
             self.tminmax = list(range(0,32))
             for tz in range(0, 32):
-                tminx, tminy = self.geodetic.LatLonToTile( self.ominx, self.ominy, tz )
-                tmaxx, tmaxy = self.geodetic.LatLonToTile( self.omaxx, self.omaxy, tz )
+                tminx, tminy = self.geodetic.LonLatToTile( self.ominx, self.ominy, tz )
+                tmaxx, tmaxy = self.geodetic.LonLatToTile( self.omaxx, self.omaxy, tz )
                 # crop tiles extending world limits (+-180,+-90)
                 tminx, tminy = max(0, tminx), max(0, tminy)
                 tmaxx, tmaxy = min(2**(tz+1)-1, tmaxx), min(2**tz-1, tmaxy)
@@ -1183,7 +1198,8 @@ gdal2tiles temp.vrt""" % self.input )
                 if self.stopped:
                     break
                 ti += 1
-                tilefilename = os.path.join(self.output, str(tz), str(tx), "%s.%s" % (ty, self.tileext))
+                ytile = self.getYtile(ty, tz)
+                tilefilename = os.path.join(self.output, str(tz), str(tx), "%s.%s" % (ytile, self.tileext))
                 if self.options.verbose:
                     print(ti,'/',tcount, tilefilename) #, "( TileMapService: z / x / y )"
 
@@ -1326,7 +1342,8 @@ gdal2tiles temp.vrt""" % self.input )
                         break
 
                     ti += 1
-                    tilefilename = os.path.join( self.output, str(tz), str(tx), "%s.%s" % (ty, self.tileext) )
+                    ytile = self.getYtile(ty, tz)
+                    tilefilename = os.path.join( self.output, str(tz), str(tx), "%s.%s" % (ytile, self.tileext) )
 
                     if self.options.verbose:
                         print(ti,'/',tcount, tilefilename) #, "( TileMapService: z / x / y )"
@@ -1358,7 +1375,8 @@ gdal2tiles temp.vrt""" % self.input )
                         for x in range(2*tx,2*tx+2):
                             minx, miny, maxx, maxy = self.tminmax[tz+1]
                             if x >= minx and x <= maxx and y >= miny and y <= maxy:
-                                dsquerytile = gdal.Open( os.path.join( self.output, str(tz+1), str(x), "%s.%s" % (y, self.tileext)), gdal.GA_ReadOnly)
+                                ytile2 = self.getYtile(y, tz+1)
+                                dsquerytile = gdal.Open( os.path.join( self.output, str(tz+1), str(x), "%s.%s" % (ytile2, self.tileext)), gdal.GA_ReadOnly)
                                 if (ty==0 and y==1) or (ty!=0 and (y % (2*ty)) != 0):
                                     tileposy = 0
                                 else:
@@ -1496,7 +1514,8 @@ gdal2tiles temp.vrt""" % self.input )
         args['profile'] = self.options.profile
 
         if self.options.profile == 'mercator':
-            args['srs'] = "EPSG:900913"
+            # epsg:3857 == epsg:900913
+            args['srs'] = "EPSG:3857"
         elif self.options.profile == 'geodetic':
             args['srs'] = "EPSG:4326"
         elif self.options.s_srs:
@@ -1511,8 +1530,8 @@ gdal2tiles temp.vrt""" % self.input )
       <Title>%(title)s</Title>
       <Abstract></Abstract>
       <SRS>%(srs)s</SRS>
-      <BoundingBox minx="%(south).14f" miny="%(west).14f" maxx="%(north).14f" maxy="%(east).14f"/>
-      <Origin x="%(south).14f" y="%(west).14f"/>
+      <BoundingBox minx="%(west).14f" miny="%(south).14f" maxx="%(east).14f" maxy="%(north).14f"/>
+      <Origin x="%(west).14f" y="%(south).14f"/>
       <TileFormat width="%(tilesize)d" height="%(tilesize)d" mime-type="image/%(tileformat)s" extension="%(tileformat)s"/>
       <TileSets profile="%(profile)s">
 """ % args
@@ -1952,6 +1971,10 @@ gdal2tiles temp.vrt""" % self.input )
         args['tileformat'] = self.tileext
         args['publishurl'] = self.options.url
         args['copyright'] = self.options.copyright
+        if self.options.tmscompatible:
+            args['tmsoffset'] = "-1"
+        else:
+            args['tmsoffset'] = ""
         if self.options.profile == 'raster':
             args['rasterzoomlevels'] = self.tmaxz+1
             args['rastermaxresolution'] = 2**(self.nativezoom) * self.out_gt[1]
@@ -1993,7 +2016,7 @@ gdal2tiles temp.vrt""" % self.input )
                   var options = {
                       div: "map",
                       controls: [],
-                      projection: "EPSG:900913",
+                      projection: "EPSG:3857",
                       displayProjection: new OpenLayers.Projection("EPSG:4326"),
                       numZoomLevels: 20
                   };
@@ -2079,7 +2102,7 @@ gdal2tiles temp.vrt""" % self.input )
                   map = new OpenLayers.Map(options);
 
                   var wms = new OpenLayers.Layer.WMS("VMap0",
-                      "http://labs.metacarta.com/wms-c/Basic.py?",
+                      "http://tilecache.osgeo.org/wms-c/Basic.py?",
                       {
                           layers: 'basic',
                           format: 'image/png'
@@ -2172,7 +2195,7 @@ gdal2tiles temp.vrt""" % self.input )
                   var res = this.getServerResolution();
                   var x = Math.round((bounds.left - this.tileOrigin.lon) / (res * this.tileSize.w));
                   var y = Math.round((bounds.bottom - this.tileOrigin.lat) / (res * this.tileSize.h));
-                  var z = this.getServerZoom()-1;
+                  var z = this.getServerZoom()%(tmsoffset)s;
                   var path = this.serviceVersion + "/" + this.layername + "/" + z + "/" + x + "/" + y + "." + this.type; 
                   var url = this.url;
                   if (OpenLayers.Util.isArray(url)) {
@@ -2250,6 +2273,17 @@ gdal2tiles temp.vrt""" % self.input )
             </html>""" % args
 
         return s
+
+    def getYtile(self, ty, tz):
+        """
+        Calculates the y-tile number based on whether XYZ or TMS (default) system is used
+        :param ty: The y-tile number
+        :return: The transformed tile number
+        """
+        if self.options.xyzFormat:
+            return (2**tz - 1) - ty  # Convert from TMS to XYZ numbering system - CjS
+        else:
+            return ty
 
 # =============================================================================
 # =============================================================================
